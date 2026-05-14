@@ -60,6 +60,7 @@ param(
     [string]$AgenticRepo  = 'agentic',
     [string]$AgenticRef   = 'main',
     [switch]$WithTier2,
+    [switch]$WithFromJira,
     [switch]$Force
 )
 
@@ -259,7 +260,45 @@ jobs:
     Write-FileOrSkip -Destination (Join-Path $Target '.github\workflows\claude-pr-bot.yml') -Content $prBotContent
 }
 elseif ($WithTier2) {
-    Write-Warning "Tier-2 reusable workflows are only implemented for the 'dotnet' stack so far."
+    Write-Warning "Tier-2 reusable workflows (claude-review, claude-pr-bot) are only implemented for the 'dotnet' stack so far."
+}
+
+# 5. Optional Tier-2 autonomous: Jira label -> draft PR (claude-from-jira).
+if ($WithFromJira -and $Stack -eq 'node') {
+    $fromJiraContent = @"
+name: claude-from-jira
+
+# Tier-2 autonomous: when a Jira ticket is labeled 'agent-ready', a
+# Jira automation rule fires a repository_dispatch here, and Claude
+# develops the ticket end-to-end into a DRAFT PR.
+# Required repo secrets: ANTHROPIC_API_KEY, optionally JIRA_DISPATCH_PAT.
+# See docs/consumer-setup.md for the Jira automation rule setup.
+
+on:
+  repository_dispatch:
+    types: [jira-ticket-ready]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  develop:
+    uses: ${AgenticOwner}/${AgenticRepo}/.github/workflows/reusable-claude-from-jira-node.yml@${AgenticRef}
+    with:
+      ticket-key:         `${{ github.event.client_payload.ticket_key }}
+      ticket-summary:     `${{ github.event.client_payload.summary }}
+      ticket-description: `${{ github.event.client_payload.description }}
+    secrets:
+      anthropic-api-key: `${{ secrets.ANTHROPIC_API_KEY }}
+      jira-dispatch-pat: `${{ secrets.JIRA_DISPATCH_PAT }}
+"@
+
+    Write-FileOrSkip -Destination (Join-Path $Target '.github\workflows\claude-from-jira.yml') -Content $fromJiraContent
+}
+elseif ($WithFromJira) {
+    Write-Warning "claude-from-jira reusable workflow is only implemented for the 'node' stack so far. Add reusable-claude-from-jira-dotnet.yml in Agentic to extend."
 }
 
 Write-Host ""
@@ -270,7 +309,13 @@ Write-Host "  1. Open the new CLAUDE.md and resolve every <<EDIT ME>> placeholde
 Write-Host "  2. (.NET only) Make sure global.json exists at the repo root pinning the SDK."
 Write-Host "  3. Commit the generated files: git add CLAUDE.md .claude .github/workflows/"
 if ($WithTier2) {
-    Write-Host "  4. Configure repo secret ANTHROPIC_API_KEY (and optionally PR_BOT_TOKEN) in GitHub repo settings."
+    Write-Host "  4a. Configure repo secret ANTHROPIC_API_KEY (and optionally PR_BOT_TOKEN) in GitHub repo settings."
+}
+if ($WithFromJira) {
+    Write-Host "  4b. Configure repo secret ANTHROPIC_API_KEY (and optionally JIRA_DISPATCH_PAT)."
+    Write-Host "      Set up a Jira automation rule: Label 'agent-ready' -> POST to"
+    Write-Host "      https://api.github.com/repos/${AgenticOwner}/<consumer-repo>/dispatches"
+    Write-Host "      with event_type=jira-ticket-ready. See docs/consumer-setup.md for the full payload."
 }
 Write-Host "  5. Push and confirm the CI workflow runs -- it should report under the 'check' job invoking"
 Write-Host "     ${AgenticOwner}/${AgenticRepo}/.github/workflows/reusable-ci-*.yml@${AgenticRef}."
