@@ -1,0 +1,70 @@
+name: reusable-ci-node
+
+# Reusable CI for Node.js + TypeScript projects. Consumer repos call
+# this via `uses:` -- they get install + typecheck + lint + format-check
+# + test + coverage artifact, identical across every consumer.
+#
+# Caller pattern (in the consumer's .github/workflows/ci.yml):
+#
+#   jobs:
+#     check:
+#       uses: elveedeveloper/agentic/.github/workflows/reusable-ci-node.yml@main
+#       with:
+#         node-version: '22.x'
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version (overridden by .nvmrc if present at working-directory root)."
+        type: string
+        default: "22.x"
+      working-directory:
+        description: "Directory containing package.json (relative to repo root)."
+        type: string
+        default: "."
+      package-manager:
+        description: "Package manager: npm | pnpm | yarn. Only npm is wired up in v1."
+        type: string
+        default: "npm"
+      coverage-retention-days:
+        description: "How long to keep the uploaded coverage artifact."
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          # If .nvmrc exists in working-directory it wins; otherwise the input is used.
+          node-version-file: ${{ inputs.working-directory }}/.nvmrc
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Check (typecheck + lint + format + test)
+        run: npm run check
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-coverage
+          path: ${{ inputs.working-directory }}/coverage/
+          retention-days: ${{ inputs.coverage-retention-days }}
+          if-no-files-found: ignore
