@@ -106,6 +106,57 @@ Before announcing it to the team, drive **one tiny ticket** through the loop. Sa
 4. Capture a first-run report — note every place the hook misfired or the agent went off-spec.
 5. **Tune before running a second ticket.**
 
+## Enabling Jira auto-transition on merge
+
+If your repo references Jira tickets in PR titles / branch names (e.g. `EL-209/calculator-endpoints`, `feat: ... (EL-209)`), you can have the ticket auto-transition to **Done** when the PR is merged. No agent in the loop — pure GitHub Actions + Jira REST API. The reusable workflow lives at `elveedeveloper/agentic/.github/workflows/reusable-jira-on-merge.yml@main`.
+
+### Wire it up
+
+Re-run the init script with `-WithJiraSync`:
+
+```powershell
+.\scripts\init-claude-config.ps1 -Target d:\path\to\your-product-repo -Stack dotnet -WithJiraSync
+```
+
+This generates `.github/workflows/jira-on-merge.yml` in your consumer — a ~25-line caller that triggers on `pull_request: closed` (merged), forwards the three Jira secrets, and delegates the actual transition logic to Agentic.
+
+### Required repo secrets
+
+| Secret | What |
+| --- | --- |
+| `JIRA_BASE_URL` | Atlassian Cloud site URL, no trailing slash (e.g. `https://elvee.atlassian.net`) |
+| `JIRA_USER_EMAIL` | Email of the Atlassian account whose API token you'll use |
+| `JIRA_API_TOKEN` | Atlassian API token. Generate at https://id.atlassian.com/manage-profile/security/api-tokens |
+
+Add via **Repo → Settings → Secrets and variables → Actions → New repository secret**.
+
+### Customize the target status
+
+The default target transition name is `Done`. If your workflow uses a different status (e.g. `Closed`, `Resolved`, `Released`), edit the consumer's `jira-on-merge.yml` `with:` block:
+
+```yaml
+    with:
+      target-transition-name: 'Released'
+```
+
+If the matched issue's current status doesn't have a transition with that name, the workflow logs a warning and skips it (doesn't fail the PR merge).
+
+### How it finds the ticket
+
+The workflow scans **PR title, head branch name, and PR body** for keys matching the regex `[A-Z][A-Z0-9]+-[0-9]+`. So any of these will be picked up:
+
+- Branch `EL-209/calculator-endpoints`
+- Title `feat: calculator endpoints (EL-209)`
+- Body containing `Closes EL-209` or `Refs CALC-42, EL-209`
+
+All matched unique keys are transitioned. The workflow also posts a Jira comment with the merged PR's URL as a breadcrumb.
+
+### Common gotchas
+
+- **`No transition named 'Done'`** — the issue's current status doesn't have a transition named `Done`. Either change the status flow in Jira or override `target-transition-name` in the consumer.
+- **API token in the wrong account** — comments + transitions appear as the token's account. Use a service account if you want clean traceability.
+- **PR merged without a Jira key anywhere** — workflow does nothing. Conservative on purpose.
+
 ## Enabling Tier-2 (auto-review + @claude PR bot)
 
 After Tier-1 has run cleanly on a few stories, you can enable the Tier-2 workflows. Two options:

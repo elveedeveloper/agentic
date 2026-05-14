@@ -1,0 +1,147 @@
+name: reusable-jira-on-merge
+
+# Reusable workflow: when a PR is merged, find any Jira issue keys
+# mentioned in the PR (title, head ref, or body) and transition each
+# matched issue to a target status (default "Done"). Consumer repos
+# call this from a workflow that triggers on `pull_request: closed`.
+#
+# Caller pattern (in the consumer's .github/workflows/jira-on-merge.yml):
+#
+#   on:
+#     pull_request:
+#       types: [closed]
+#   permissions:
+#     contents: read
+#   jobs:
+#     transition:
+#       if: github.event.pull_request.merged == true
+#       uses: elveedeveloper/agentic/.github/workflows/reusable-jira-on-merge.yml@main
+#       with:
+#         target-transition-name: 'Done'
+#       secrets:
+#         jira-base-url:   ${{ secrets.JIRA_BASE_URL }}
+#         jira-user-email: ${{ secrets.JIRA_USER_EMAIL }}
+#         jira-api-token:  ${{ secrets.JIRA_API_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      target-transition-name:
+        description: "Jira transition name to apply on merge (must match a transition available from the issue's current status)."
+        type: string
+        default: "Done"
+      key-regex:
+        description: "Regex matching Jira issue keys to look for (e.g. `[A-Z][A-Z0-9]+-[0-9]+` matches EL-209, CALC-42, etc.)."
+        type: string
+        default: "[A-Z][A-Z0-9]+-[0-9]+"
+    secrets:
+      jira-base-url:
+        description: "Base URL of the Atlassian Cloud site (e.g. https://yourorg.atlassian.net). No trailing slash."
+        required: true
+      jira-user-email:
+        description: "Email of the Atlassian account used for the API token."
+        required: true
+      jira-api-token:
+        description: "Atlassian API token. Generate at https://id.atlassian.com/manage-profile/security/api-tokens."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  transition:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Find Jira keys in PR title / head ref / body
+        id: find
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD:  ${{ github.event.pull_request.head.ref }}
+          PR_BODY:  ${{ github.event.pull_request.body }}
+          KEY_REGEX: ${{ inputs.key-regex }}
+        run: |
+          set -euo pipefail
+          sources=$(printf '%s\n%s\n%s\n' "${PR_TITLE}" "${PR_HEAD}" "${PR_BODY}")
+          keys=$(echo "$sources" | grep -oE "$KEY_REGEX" | sort -u || true)
+          if [ -z "$keys" ]; then
+            echo "No Jira keys matched in PR title, head ref, or body. Nothing to transition."
+          else
+            echo "Matched keys:"
+            echo "$keys"
+          fi
+          {
+            echo "keys<<EOF"
+            echo "$keys"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Transition each matched issue
+        if: steps.find.outputs.keys != ''
+        env:
+          JIRA_BASE:   ${{ secrets.jira-base-url }}
+          JIRA_USER:   ${{ secrets.jira-user-email }}
+          JIRA_TOKEN:  ${{ secrets.jira-api-token }}
+          TARGET_NAME: ${{ inputs.target-transition-name }}
+          KEYS:        ${{ steps.find.outputs.keys }}
+          PR_URL:      ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            echo "::group::$key"
+
+            # 1. Look up available transitions for this issue.
+            transitions=$(curl -sS -u "$JIRA_USER:$JIRA_TOKEN" \
+              "$JIRA_BASE/rest/api/3/issue/$key/transitions")
+
+            target_id=$(echo "$transitions" | jq -r --arg name "$TARGET_NAME" \
+              '.transitions[]? | select(.name == $name) | .id' | head -n 1)
+
+            if [ -z "$target_id" ] || [ "$target_id" = "null" ]; then
+              echo "::warning::No transition named '$TARGET_NAME' available on $key from its current status. Skipping."
+              echo "::endgroup::"
+              continue
+            fi
+
+            # 2. Apply the transition.
+            echo "Transitioning $key via transition id=$target_id ..."
+            tcode=$(curl -sS -o /tmp/transition_resp -w "%{http_code}" \
+              -u "$JIRA_USER:$JIRA_TOKEN" \
+              -X POST -H "Content-Type: application/json" \
+              "$JIRA_BASE/rest/api/3/issue/$key/transitions" \
+              -d "{\"transition\":{\"id\":\"$target_id\"}}")
+
+            if [ "$tcode" != "204" ]; then
+              echo "::error::Transition of $key failed with HTTP $tcode:"
+              cat /tmp/transition_resp || true
+              exit 1
+            fi
+
+            # 3. Leave a breadcrumb comment so humans see who/why.
+            ccode=$(curl -sS -o /tmp/comment_resp -w "%{http_code}" \
+              -u "$JIRA_USER:$JIRA_TOKEN" \
+              -X POST -H "Content-Type: application/json" \
+              "$JIRA_BASE/rest/api/3/issue/$key/comment" \
+              -d "$(jq -n --arg pr "$PR_URL" --arg target "$TARGET_NAME" \
+                '{body: {type: "doc", version: 1, content: [
+                  {type: "paragraph", content: [
+                    {type: "text", text: "Auto-transitioned to "},
+                    {type: "text", text: $target, marks: [{type: "strong"}]},
+                    {type: "text", text: " by GitHub Actions: merge of "},
+                    {type: "text", text: $pr, marks: [{type: "link", attrs: {href: $pr}}]},
+                    {type: "text", text: "."}
+                  ]}
+                ]}}')")
+
+            if [ "$ccode" != "201" ]; then
+              echo "::warning::Comment post on $key returned HTTP $ccode (transition still applied):"
+              cat /tmp/comment_resp || true
+            else
+              echo "$key -> $TARGET_NAME (transitioned + commented)."
+            fi
+
+            echo "::endgroup::"
+          done <<< "$KEYS"
