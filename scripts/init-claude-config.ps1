@@ -33,7 +33,7 @@
     Also generate claude-review.yml and claude-pr-bot.yml workflow shims in the consumer.
 
 .PARAMETER Force
-    Overwrite existing destination files. Use with care — this can clobber per-repo CLAUDE.md edits.
+    Overwrite existing destination files. Use with care -- this can clobber per-repo CLAUDE.md edits.
 
 .EXAMPLE
     .\scripts\init-claude-config.ps1 `
@@ -123,7 +123,7 @@ Write-Host "  Source : $TemplateRoot"
 Write-Host "  Pinned : ${AgenticOwner}/${AgenticRepo}@${AgenticRef}"
 Write-Host ""
 
-# 1. Drop CLAUDE.md (placeholders intact — human edits these after init).
+# 1. Drop CLAUDE.md (placeholders intact -- human edits these after init).
 Copy-OrSkip -Source (Join-Path $TemplateRoot 'CLAUDE.md') `
             -Destination (Join-Path $Target 'CLAUDE.md')
 
@@ -245,7 +245,7 @@ Write-Host "  3. Commit the generated files: git add CLAUDE.md .claude .github/w
 if ($WithTier2) {
     Write-Host "  4. Configure repo secret ANTHROPIC_API_KEY (and optionally PR_BOT_TOKEN) in GitHub repo settings."
 }
-Write-Host "  5. Push and confirm the CI workflow runs — it should report under the 'check' job invoking"
+Write-Host "  5. Push and confirm the CI workflow runs -- it should report under the 'check' job invoking"
 Write-Host "     ${AgenticOwner}/${AgenticRepo}/.github/workflows/reusable-ci-*.yml@${AgenticRef}."
 Write-Host ""
 Write-Host "To pull updates later: re-run this script with -Force." -ForegroundColor DarkGray
