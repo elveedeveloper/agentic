@@ -1,0 +1,73 @@
+# Jira `agent-ready` label → repository_dispatch → autonomous draft PR.
+# See node template for the Jira automation rule setup.
+
+name: claude-from-jira
+
+on:
+  repository_dispatch:
+    types: [jira-ticket-ready]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.JIRA_DISPATCH_PAT || github.token }}
+
+      - name: Create feature branch
+        env:
+          TICKET: ${{ github.event.client_payload.ticket_key }}
+          SUMMARY: ${{ github.event.client_payload.summary }}
+        run: |
+          SLUG=$(echo "$SUMMARY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g' | cut -c1-40)
+          BRANCH="${TICKET}/${SLUG}"
+          git checkout -b "$BRANCH"
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Claude develops the ticket
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Pick up Jira ticket ${{ github.event.client_payload.ticket_key }}.
+
+            Summary:     ${{ github.event.client_payload.summary }}
+            Description: ${{ github.event.client_payload.description }}
+
+            Process:
+            1. Read CLAUDE.md fully before planning.
+            2. Plan the change — one-paragraph plan in the PR body.
+            3. Implement with Playwright e2e for user-facing AC and Vitest for unit logic.
+            4. Run `pnpm check` (typecheck → lint → format:check → test → build). Iterate until green.
+            5. Conventional Commits with ticket key:
+               `feat(route-segment): description (${{ github.event.client_payload.ticket_key }})`
+            6. Push to origin/$BRANCH.
+            7. Open DRAFT PR with `gh pr create --draft` — body includes ticket link, plan, test plan, bundle-size impact estimate, open questions.
+
+            Hard rules:
+            - DRAFT PR only. Never merge. Never force-push.
+            - App Router only — no new files under pages/.
+            - NEXT_PUBLIC_* must NEVER contain a secret.
+            - Never modify .github/workflows/, next.config.*, middleware.ts, or pnpm-lock.yaml directly.
+            - Scope too big (>1 route segment or >400 lines)? Draft PR with an empty commit explaining the split. Do not implement.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(pnpm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"

@@ -1,0 +1,96 @@
+# Triggered by Jira automation: when a ticket is labeled `agent-ready`,
+# Jira posts a repository_dispatch to GitHub, and this workflow runs Claude
+# end-to-end to open a DRAFT PR.
+#
+# Jira automation rule (set up once per project):
+#   Trigger: Label added = `agent-ready`
+#   Action:  Web request
+#     URL:     https://api.github.com/repos/<OWNER>/<REPO>/dispatches
+#     Method:  POST
+#     Headers: Authorization: token <PAT_WITH_REPO_DISPATCH>
+#              Accept: application/vnd.github+json
+#     Body:    {
+#                "event_type": "jira-ticket-ready",
+#                "client_payload": {
+#                  "ticket_key": "{{issue.key}}",
+#                  "summary":    "{{issue.summary}}",
+#                  "description":"{{issue.description}}",
+#                  "slug":       "{{#urlEncode}}{{issue.summary}}{{/urlEncode}}"
+#                }
+#              }
+#
+# Setup on GitHub side:
+#   1. ANTHROPIC_API_KEY repo secret.
+#   2. JIRA_DISPATCH_PAT (a PAT with contents:write, pull-requests:write).
+
+name: claude-from-jira
+
+on:
+  repository_dispatch:
+    types: [jira-ticket-ready]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.JIRA_DISPATCH_PAT || github.token }}
+
+      - name: Create feature branch
+        env:
+          TICKET: ${{ github.event.client_payload.ticket_key }}
+          SUMMARY: ${{ github.event.client_payload.summary }}
+        run: |
+          SLUG=$(echo "$SUMMARY" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-\|-$//g' | cut -c1-40)
+          BRANCH="${TICKET}/${SLUG}"
+          git checkout -b "$BRANCH"
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Claude develops the ticket
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are picking up Jira ticket ${{ github.event.client_payload.ticket_key }}.
+
+            Summary:     ${{ github.event.client_payload.summary }}
+            Description: ${{ github.event.client_payload.description }}
+
+            Process:
+            1. Read CLAUDE.md fully before planning.
+            2. Plan the change in your head — write a one-paragraph plan into the PR body.
+            3. Implement with tests-first when AC is measurable.
+            4. Run `npm run check`. Iterate until green.
+            5. Commit with Conventional Commits + the ticket key in the subject.
+               Example: `feat(scope): short description (${{ github.event.client_payload.ticket_key }})`
+            6. Push to origin/$BRANCH.
+            7. Open a DRAFT PR with `gh pr create --draft`. PR body should include:
+                - Link back to the Jira ticket (key in the title makes Atlassian auto-link).
+                - Plan summary (3–5 bullets).
+                - Test plan (what you tested, what you didn't).
+                - Any open questions for human review.
+
+            Hard rules:
+            - DRAFT PR only — humans promote to ready-for-review.
+            - Never merge.
+            - Never force-push.
+            - Never modify .github/workflows/.
+            - If the ticket scope is too big (>1 area of the codebase, >400 lines estimated), open a draft PR with a single empty commit and a body explaining that the ticket should be split. Do not implement.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git:*),Bash(gh:*)"

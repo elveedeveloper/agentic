@@ -1,0 +1,47 @@
+# Auto-review every non-draft PR. See node template for full setup notes.
+
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - name: Claude reviews the diff
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are reviewing PR #${{ github.event.pull_request.number }}.
+
+            Steps:
+            1. Inspect the diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            2. Run /review (correctness, async/await usage, nullable handling, naming)
+            3. Run /security-review (auth, secrets, deserialization, SQL injection)
+            4. Aggregate into a single PR review comment, grouped Blocking / Should-fix / Nice-to-have.
+            5. Do NOT push code changes.
+          allowed_tools: "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr review:*)"

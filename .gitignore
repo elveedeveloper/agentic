@@ -1,0 +1,17 @@
+# Templates repo — gitignore stays minimal
+# Per-stack ignores live inside each template folder
+
+node_modules/
+dist/
+bin/
+obj/
+.next/
+out/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vscode/
+.idea/

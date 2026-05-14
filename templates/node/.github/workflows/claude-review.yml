@@ -1,0 +1,57 @@
+# Auto-review every non-draft PR with /review + /security-review.
+# Posts findings as a PR review comment. No code changes are pushed.
+#
+# Setup:
+#   1. Add repo secret ANTHROPIC_API_KEY.
+#   2. Pin anthropics/claude-code-action to a specific tag — check
+#      https://github.com/anthropics/claude-code-action for the current release.
+
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Claude reviews the diff
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are reviewing PR #${{ github.event.pull_request.number }}.
+
+            Steps:
+            1. Inspect the diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            2. Run /review (code quality, naming, duplication, correctness)
+            3. Run /security-review (auth, secrets, injection, OWASP)
+            4. Aggregate findings into a single PR review comment:
+               - Group by severity: Blocking / Should-fix / Nice-to-have
+               - One line per finding, with file:line and a fix suggestion
+               - If no findings, post a single line: "No issues found by automated review."
+            5. Do NOT push code changes — review only.
+          allowed_tools: "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr review:*)"

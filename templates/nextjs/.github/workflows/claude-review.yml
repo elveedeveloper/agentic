@@ -1,0 +1,60 @@
+# Auto-review every non-draft PR. See node template for full setup notes.
+
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Claude reviews the diff
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are reviewing PR #${{ github.event.pull_request.number }}.
+
+            Steps:
+            1. Inspect diff: `git diff origin/${{ github.base_ref }}...HEAD`
+            2. Run /review with Next.js focus:
+                - Server vs Client Component split correct?
+                - Server Actions for mutations?
+                - next/link not <a> for internal routes?
+                - Metadata exports present on new routes?
+                - Accessibility (a11y) on UI components?
+                - Bundle size: any heavy client imports?
+            3. Run /security-review:
+                - Any secrets in NEXT_PUBLIC_* (these LEAK to the client)?
+                - Auth checks on Server Actions and route handlers?
+                - SQL/NoSQL injection in any direct DB calls?
+            4. Aggregate findings into a single PR review comment, grouped Blocking / Should-fix / Nice-to-have.
+            5. Do NOT push code changes.
+          allowed_tools: "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr review:*)"

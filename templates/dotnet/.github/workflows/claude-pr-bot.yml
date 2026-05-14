@@ -1,0 +1,66 @@
+# Responds to `@claude ...` comments on PRs. See node template for full setup notes.
+
+name: claude-pr-bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  respond:
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '@claude') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF=$(gh pr view ${{ github.event.issue.number }} --json headRefName -q .headRefName)
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.PR_BOT_TOKEN || github.token }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - run: dotnet restore
+
+      - name: Configure git
+        run: |
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+
+      - name: Claude responds
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            User @${{ github.event.comment.user.login }} commented on PR #${{ github.event.issue.number }}:
+
+            ---
+            ${{ github.event.comment.body }}
+            ---
+
+            Address the comment:
+            - Fix request: change code per CLAUDE.md, run `dotnet format && dotnet build && dotnet test`,
+              commit with Conventional Commits, push to `${{ steps.pr.outputs.ref }}`.
+            - Question: reply via `gh pr comment`.
+            - Both: do both.
+
+            Hard rules:
+            - Never merge or force-push.
+            - Never modify .github/workflows/, Directory.Build.props, or .editorconfig unless explicitly asked.
+            - Ambiguous request → ask for clarification via comment.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(dotnet:*),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr:*)"

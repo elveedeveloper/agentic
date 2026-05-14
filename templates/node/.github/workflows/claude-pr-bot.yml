@@ -1,0 +1,73 @@
+# Wakes Claude when someone comments `@claude ...` on a PR.
+# Claude addresses the comment: fixes code, replies, or both.
+#
+# Setup:
+#   1. Add repo secret ANTHROPIC_API_KEY.
+#   2. Optional: create a fine-grained PAT with `contents:write` + `pull-requests:write`
+#      and add as secret PR_BOT_TOKEN. Falls back to github.token (cannot trigger workflows).
+
+name: claude-pr-bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  respond:
+    if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '@claude') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Resolve PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF=$(gh pr view ${{ github.event.issue.number }} --json headRefName -q .headRefName)
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.PR_BOT_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+
+      - name: Claude responds to @claude comment
+        uses: anthropics/claude-code-action@v1   # VERIFY current tag
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            A user (@${{ github.event.comment.user.login }}) commented on PR #${{ github.event.issue.number }}:
+
+            ---
+            ${{ github.event.comment.body }}
+            ---
+
+            Address the comment:
+            - If it's a request to fix something: make the change following CLAUDE.md, run `npm run check`, commit with Conventional Commits, push to `${{ steps.pr.outputs.ref }}`.
+            - If it's a question: reply via `gh pr comment` with a concise answer.
+            - If both: do both.
+
+            Hard rules:
+            - Never merge the PR.
+            - Never force-push or amend existing commits.
+            - Never modify .github/workflows/ unless the comment explicitly asks.
+            - If the request is unclear or out of scope, reply with a comment asking for clarification rather than guessing.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(npm:*),Bash(npx:*),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr:*)"
