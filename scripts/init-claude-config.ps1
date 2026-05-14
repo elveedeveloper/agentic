@@ -61,6 +61,7 @@ param(
     [string]$AgenticRef   = 'main',
     [switch]$WithTier2,
     [switch]$WithFromJira,
+    [switch]$WithJiraSync,
     [switch]$Force
 )
 
@@ -301,6 +302,38 @@ elseif ($WithFromJira) {
     Write-Warning "claude-from-jira reusable workflow is only implemented for the 'node' stack so far. Add reusable-claude-from-jira-dotnet.yml in Agentic to extend."
 }
 
+# 5. Optional Jira-on-merge sync shim (stack-agnostic).
+if ($WithJiraSync) {
+    $jiraSyncContent = @"
+name: jira-on-merge
+
+# Auto-transition Jira ticket(s) when this PR is merged. Delegates to
+# Agentic's reusable workflow. Requires repo secrets JIRA_BASE_URL,
+# JIRA_USER_EMAIL, JIRA_API_TOKEN -- see docs/consumer-setup.md.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  transition:
+    if: `${{ github.event.pull_request.merged == true }}
+    uses: ${AgenticOwner}/${AgenticRepo}/.github/workflows/reusable-jira-on-merge.yml@${AgenticRef}
+    with:
+      target-transition-name: 'Done'
+    secrets:
+      jira-base-url:   `${{ secrets.JIRA_BASE_URL }}
+      jira-user-email: `${{ secrets.JIRA_USER_EMAIL }}
+      jira-api-token:  `${{ secrets.JIRA_API_TOKEN }}
+"@
+
+    Write-FileOrSkip -Destination (Join-Path $Target '.github\workflows\jira-on-merge.yml') -Content $jiraSyncContent
+}
+
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 Write-Host ""
@@ -316,6 +349,10 @@ if ($WithFromJira) {
     Write-Host "      Set up a Jira automation rule: Label 'agent-ready' -> POST to"
     Write-Host "      https://api.github.com/repos/${AgenticOwner}/<consumer-repo>/dispatches"
     Write-Host "      with event_type=jira-ticket-ready. See docs/consumer-setup.md for the full payload."
+}
+if ($WithJiraSync) {
+    Write-Host "  4c. Configure repo secrets JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN in GitHub repo settings."
+    Write-Host "      Generate the API token at https://id.atlassian.com/manage-profile/security/api-tokens."
 }
 Write-Host "  5. Push and confirm the CI workflow runs -- it should report under the 'check' job invoking"
 Write-Host "     ${AgenticOwner}/${AgenticRepo}/.github/workflows/reusable-ci-*.yml@${AgenticRef}."
