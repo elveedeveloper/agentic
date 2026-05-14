@@ -1,0 +1,109 @@
+name: reusable-claude-pr-bot
+
+# Reusable @claude PR bot for .NET projects. Consumer repos call this from
+# their own workflow that triggers on issue_comment. The reusable assumes
+# the caller has already filtered for `@claude` in PR comments. Pass
+# `pr-bot-token` if you want Claude's pushes to retrigger downstream CI
+# (without it the bot falls back to GITHUB_TOKEN which can't retrigger).
+#
+# Caller pattern (in the consumer's .github/workflows/claude-pr-bot.yml):
+#
+#   on:
+#     issue_comment:
+#       types: [created]
+#   permissions:
+#     contents: write
+#     pull-requests: write
+#     issues: write
+#   jobs:
+#     respond:
+#       if: ${{ github.event.issue.pull_request && contains(github.event.comment.body, '@claude') }}
+#       uses: elveedeveloper/agentic/.github/workflows/reusable-claude-pr-bot.yml@main
+#       secrets:
+#         anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#         pr-bot-token:     ${{ secrets.PR_BOT_TOKEN }}    # optional, see docs/consumer-setup.md
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the .sln / Directory.Build.props."
+        type: string
+        default: "."
+      dotnet-version:
+        description: ".NET SDK version (overridden by global.json if present)."
+        type: string
+        default: "8.0.x"
+      action-ref:
+        description: "Pinned ref / tag of anthropics/claude-code-action. VERIFY current stable tag."
+        type: string
+        default: "v1"
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key for Claude Code."
+        required: true
+      pr-bot-token:
+        description: "Optional fine-grained PAT (contents:write + pull-requests:write). Falls back to GITHUB_TOKEN if absent — but then Claude's pushes will NOT retrigger downstream workflows."
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  respond:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Resolve PR branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF=$(gh pr view ${{ github.event.issue.number }} --json headRefName -q .headRefName)
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.pr-bot-token || github.token }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.working-directory }}/global.json
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - run: dotnet restore
+
+      - name: Configure git
+        run: |
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+
+      - name: Claude responds
+        uses: anthropics/claude-code-action@${{ inputs.action-ref }}
+        with:
+          anthropic_api_key: ${{ secrets.anthropic-api-key }}
+          prompt: |
+            User @${{ github.event.comment.user.login }} commented on PR #${{ github.event.issue.number }} in ${{ github.repository }}:
+
+            ---
+            ${{ github.event.comment.body }}
+            ---
+
+            Address the comment:
+            - **Fix request:** change code per CLAUDE.md, run `dotnet format && dotnet build && dotnet test`,
+              commit with Conventional Commits, push to `${{ steps.pr.outputs.ref }}`.
+            - **Question:** reply via `gh pr comment`.
+            - **Both:** do both.
+
+            Hard rules:
+            - Never merge or force-push.
+            - Never modify `.github/workflows/`, `Directory.Build.props`, or `.editorconfig` unless explicitly asked.
+            - Ambiguous request -> ask for clarification via `gh pr comment` and stop.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(dotnet:*),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(gh pr:*)"
