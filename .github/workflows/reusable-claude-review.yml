@@ -1,0 +1,80 @@
+name: reusable-claude-review
+
+# Reusable PR auto-review for .NET projects. Consumer repos call this from
+# their own workflow that triggers on pull_request. The reusable assumes the
+# caller has already filtered for non-draft PRs and that ANTHROPIC_API_KEY
+# is available as a secret.
+#
+# Caller pattern (in the consumer's .github/workflows/claude-review.yml):
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, ready_for_review]
+#   permissions:
+#     contents: read
+#     pull-requests: write
+#   jobs:
+#     review:
+#       if: ${{ !github.event.pull_request.draft }}
+#       uses: elveedeveloper/agentic/.github/workflows/reusable-claude-review.yml@main
+#       secrets:
+#         anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory containing the .sln / Directory.Build.props."
+        type: string
+        default: "."
+      dotnet-version:
+        description: ".NET SDK version (overridden by global.json if present)."
+        type: string
+        default: "8.0.x"
+      action-ref:
+        description: "Pinned ref / tag of anthropics/claude-code-action. VERIFY current stable tag."
+        type: string
+        default: "v1"
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key for Claude Code."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ${{ inputs.working-directory }}/global.json
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - run: dotnet restore
+
+      - name: Claude reviews the diff
+        uses: anthropics/claude-code-action@${{ inputs.action-ref }}
+        with:
+          anthropic_api_key: ${{ secrets.anthropic-api-key }}
+          prompt: |
+            You are reviewing PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            Steps:
+            1. Inspect the diff: `git diff origin/${{ github.base_ref }}...HEAD`.
+            2. Run /review (correctness, async/await usage, nullable handling, naming).
+            3. Run /security-review (auth, secrets, deserialization, SQL injection, untrusted input).
+            4. Aggregate into a single PR review comment, grouped: **Blocking** / **Should-fix** / **Nice-to-have**.
+            5. Do NOT push code changes. Comments only.
+          allowed_tools: "Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr review:*)"

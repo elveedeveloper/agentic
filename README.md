@@ -9,10 +9,19 @@ templates/
   node/        Node.js + TypeScript (CLI / library / backend service)
   dotnet/      .NET (C# class lib / Web API / Worker)
   nextjs/      Next.js (App Router, Vitest + Playwright)
+.github/workflows/
+  reusable-ci-dotnet.yml      Shared CI — consumer repos call this via workflow_call
+  reusable-claude-review.yml  Shared Tier-2 PR auto-review
+  reusable-claude-pr-bot.yml  Shared Tier-2 @claude PR bot
+scripts/
+  init-claude-config.ps1      Bootstrap a consumer repo with the shared config
 docs/
-  workflow.md         Full walkthrough of the 7-stage agentic loop
-  hooks-cookbook.md   Hook patterns + per-stack recipes
-  best-practices.md   Cross-cutting principles you'll reuse on every repo
+  workflow.md          Full walkthrough of the 7-stage agentic loop
+  hooks-cookbook.md    Hook patterns + per-stack recipes
+  best-practices.md    Cross-cutting principles you'll reuse on every repo
+  consumer-setup.md    How another repo consumes this one (shared-config pattern)
+  industry-context.md  What big AI companies actually do, and where you fit
+  first-run-report.md  Findings from the first end-to-end loop validation
 ```
 
 Each template ships with:
@@ -30,13 +39,31 @@ Each template ships with:
 
 Read [docs/industry-context.md](docs/industry-context.md) for what each tier actually is and when each is worth turning on.
 
-## How to use a template
+## Two ways to consume this repo
 
-1. Pick the stack folder that matches your repo: `node`, `dotnet`, or `nextjs`.
-2. Copy `CLAUDE.md`, `.claude/`, and (if you want CI) `.github/` into your project root. Merge or rename existing files as needed — don't blindly overwrite.
-3. Open `CLAUDE.md` and edit the **`<<EDIT ME>>`** placeholders to match your repo (test command, build command, paths, etc.).
-4. Open Claude Code in that repo. The agent will read `CLAUDE.md` on startup; hooks fire automatically once `.claude/settings.json` is in place.
-5. Run `/init` if you want Claude to flesh out the CLAUDE.md further based on your actual code.
+This repo can be used in two modes. Pick **Mode B** unless you have a reason not to.
+
+### Mode A — Drop-in (manual copy, simple but doesn't scale)
+
+Copy `CLAUDE.md`, `.claude/`, and `.github/` from a `templates/<stack>/` folder into your project root by hand. Each repo ends up with its own *copy* of the hooks and workflows. Updates require re-copying into every consumer. Fine for one-off experiments; gets painful past ~2 repos.
+
+### Mode B — Shared config (recommended, big-company-shape)
+
+Your consumer repo ends up with:
+
+- **Local copies** of `CLAUDE.md`, `.claude/settings.json`, and the per-stack hooks (so things work offline and can be per-repo customized).
+- **A thin `.github/workflows/ci.yml`** (~30 lines) that calls Agentic's reusable workflows via `workflow_call`. CI logic lives in *one* place (this repo); consumers re-execute against the latest pinned ref every CI run.
+
+To bootstrap a consumer repo this way, run the init script from a local checkout of this repo:
+
+```powershell
+cd path\to\Agentic
+.\scripts\init-claude-config.ps1 `
+    -Target d:\path\to\your-product-repo `
+    -Stack dotnet
+```
+
+Then resolve `<<EDIT ME>>` placeholders in the new `CLAUDE.md`, commit, push. The full walkthrough — including the Tier-2 opt-in, secret setup, and updating consumers when the shared workflows change — is in [docs/consumer-setup.md](docs/consumer-setup.md).
 
 ## The agentic loop in one diagram
 

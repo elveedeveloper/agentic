@@ -1,0 +1,78 @@
+name: reusable-ci-dotnet
+
+# Reusable CI for .NET projects. Consumer repos call this via `uses:` —
+# they get format-check + build + test + test-results artifact, identical
+# across every consumer. See docs/consumer-setup.md for the consumer-side
+# ci.yml shim that invokes this.
+
+on:
+  workflow_call:
+    inputs:
+      dotnet-version:
+        description: ".NET SDK version (overridden by global.json if present)."
+        type: string
+        default: "8.0.x"
+      working-directory:
+        description: "Directory containing the .sln / Directory.Build.props (relative to repo root)."
+        type: string
+        default: "."
+      configuration:
+        description: "MSBuild configuration (Release | Debug)."
+        type: string
+        default: "Release"
+      test-results-retention-days:
+        description: "How long to keep the uploaded TestResults artifact."
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          # If global.json exists in working-directory it wins; otherwise the input is used.
+          global-json-file: ${{ inputs.working-directory }}/global.json
+          dotnet-version: ${{ inputs.dotnet-version }}
+        continue-on-error: false
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles(format('{0}/**/*.csproj', inputs.working-directory)) }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Format check
+        run: dotnet format --verify-no-changes --severity warn
+
+      - name: Build
+        run: dotnet build --no-restore -c ${{ inputs.configuration }}
+
+      - name: Test
+        run: |
+          dotnet test --no-build -c ${{ inputs.configuration }} \
+            --logger "trx" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: ${{ inputs.working-directory }}/TestResults/
+          retention-days: ${{ inputs.test-results-retention-days }}
