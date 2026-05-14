@@ -4,6 +4,7 @@ Shared agentic-AI development workflow for **Node.js**, **.NET**, and **Next.js*
 
 If you're starting fresh: skip to [Quick starts](#quick-starts).
 If you already have a real repo: skip to [Adopt on an existing repo](#adopt-on-an-existing-repo).
+If you just want to drive Claude on your own machine with no GitHub Actions: skip to [Local-only](#local-only--use-on-your-machine-without-github-actions).
 If you want to know how this is structured: keep reading.
 
 ---
@@ -231,13 +232,14 @@ By default it **skips** any file that already exists. It will:
 
 If your repo already has a `CLAUDE.md`, the init won't touch it. Merge new content from `templates/<stack>/CLAUDE.md` by hand — *don't* lose your repo-specific conventions.
 
-**Step 3 — Reconcile CI conflicts.** Most existing repos have `.github/workflows/ci.yml` already. Three options:
+**Step 3 — Reconcile CI conflicts.** Most existing repos have `.github/workflows/ci.yml` already. Four options:
 
 | Option | When |
 | --- | --- |
 | **Rename the new file** to `claude-ci.yml` and let both run | Simplest; some duplicate compute |
 | **Merge** the agentic CI step into your existing `ci.yml` | Cleaner long-term; more work |
 | **Skip** the agentic CI entirely | Your existing CI already runs `npm run check` / `dotnet test` |
+| **Delete the generated `ci.yml`** and stay local-only | You don't want any pipeline integration yet — see [Local-only](#local-only--use-on-your-machine-without-github-actions) below |
 
 The shared-config CI is the *safety net*. Local hooks are what actually enforce per-commit. You can adopt CLAUDE.md + hooks without touching your CI at all.
 
@@ -248,6 +250,61 @@ The shared-config CI is the *safety net*. Local hooks are what actually enforce 
 **Step 5 — Smoke test.** Open Claude Code in the existing repo, give it a tiny ticket (typo fix, doc update, one-function helper). Drive end-to-end. Capture a first-run report ([example](docs/first-run-report.md)). Tune **before** running a second ticket.
 
 **Step 6 — Roll out.** Once one repo works cleanly for 5–10 stories, adopt the next one. Don't enable Tier-2 on more than one repo until you've felt the Tier-1 friction first.
+
+---
+
+### Local-only — use on your machine without GitHub Actions
+
+You don't need a pipeline to get most of the value. The agent contract, the per-edit hooks, and the pre-commit gate all run **entirely on your laptop** through Claude Code. You can adopt that today, on any existing repo, without touching CI, without adding GitHub secrets, and without your team noticing.
+
+**What you get locally:**
+- `CLAUDE.md` — the agent reads this at startup; it's your stack conventions + commands + out-of-scope paths.
+- `.claude/hooks/guard-secrets.*` — fires on every `Edit / Write / MultiEdit`, blocks AWS keys, PATs, private-key blocks.
+- `.claude/hooks/guard-commit.*` — fires before every `git commit`, runs your `check`/`test` script, blocks red commits.
+- `.claude/settings.json` — permissions (which Bash commands the agent can run unprompted) + hook bindings.
+- Atlassian MCP for Jira intake — also a **local** setup inside Claude Code (`/mcp` → authenticate), nothing in GitHub required.
+
+**What you skip:**
+- No `ANTHROPIC_API_KEY` in repo settings — Claude Code uses your local auth.
+- No Tier-2 workflows, no `claude-review.yml`, no `claude-from-jira.yml`.
+- No `jira-on-merge.yml` — close Jira tickets the way you do today.
+
+**Steps:**
+
+```powershell
+# 1. Run init as usual
+.\scripts\init-claude-config.ps1 `
+    -Target d:\path\to\existing-repo `
+    -Stack <node|dotnet|nextjs>
+
+# 2. Delete the generated CI shim — you're not using it
+cd d:\path\to\existing-repo
+Remove-Item .github\workflows\ci.yml
+
+# 3. Resolve every <<EDIT ME>> placeholder in CLAUDE.md
+#    (stack version, repo name, commands, out-of-scope paths)
+
+# 4. Make sure the command in guard-commit.* exists in your repo
+#    Node:   `npm run check` — add to package.json scripts if missing
+#    .NET:   `dotnet format && dotnet build && dotnet test`
+#    Edit .claude/hooks/guard-commit.* to call whatever your repo actually uses.
+
+# 5. Commit just the agentic bits — nothing about CI changes
+git add CLAUDE.md .claude
+git commit -m "chore: adopt agentic local config"
+```
+
+**Daily use as a developer:**
+
+1. Open Claude Code in the repo (`claude` in the terminal at the repo root).
+2. Give it a task in plain English, or paste a Jira key (e.g. *"work on EL-217"*) if you've connected the Atlassian MCP.
+3. The agent reads `CLAUDE.md`, enters plan mode, shows you the plan. **You approve** before any edits land — this is the first human gate.
+4. As it edits, the secret-scan hook fires on every write. If the commit script is red, the commit hook blocks it. You see the failure and either fix it or tell the agent to.
+5. When it's done, you `git push` and open a PR through your normal process. Review the diff like any other PR.
+
+That's it. No runner, no secret, no workflow. Tier-2 (review-on-open, autonomous-from-Jira) is a strict *addition* you can wire in later when you want async work; it doesn't change anything about how the local loop works.
+
+**When you outgrow local-only:** once Tier-1 has been smooth for ~5–10 stories and you want hands-off review or after-hours Jira tickets, jump back to [Two consumption modes](#two-consumption-modes) and follow the pipeline path. The local files you already have don't change — you just add a `.github/workflows/` shim and a couple of repo secrets.
 
 ---
 
@@ -399,6 +456,7 @@ When you have 3+ consumer repos:
 
 - **Newcomer:** this file → [`docs/industry-context.md`](docs/industry-context.md) → [`docs/workflow.md`](docs/workflow.md) → quick start above.
 - **Adopting on an existing repo:** [`docs/consumer-setup.md`](docs/consumer-setup.md) → [Adopt on an existing repo](#adopt-on-an-existing-repo) above → [`docs/hooks-cookbook.md`](docs/hooks-cookbook.md).
+- **Local-only developer (no pipeline):** [Local-only](#local-only--use-on-your-machine-without-github-actions) above → [`docs/workflow.md`](docs/workflow.md) (Tier-1 walkthrough) → [`docs/hooks-cookbook.md`](docs/hooks-cookbook.md).
 - **Tuning quality:** [Where to tune code quality](#where-to-tune-code-quality) above → [`docs/best-practices.md`](docs/best-practices.md) → [`docs/hooks-cookbook.md`](docs/hooks-cookbook.md).
 - **Running CI for your changes to Agentic itself:** [`docs/ci-babysitter.md`](docs/ci-babysitter.md).
 - **What went wrong / right the first time we ran this end-to-end:** [`docs/first-run-report.md`](docs/first-run-report.md).
