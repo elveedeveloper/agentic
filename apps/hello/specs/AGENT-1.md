@@ -36,7 +36,7 @@ the loop itself, not about the task.
 - Mirror the structure of `tests/greet.test.ts`: one `describe('farewell', ...)` block, one `it(...)` per acceptance bullet.
 - Use Vitest's `describe` / `it` / `expect` — no other test helpers.
 - No mocking is required (the function is pure).
-- Optional: add a third test covering a name with whitespace (e.g., `"  "`) — *not* an AC, but a nice-to-have if trivial.
+- Optional: add a third test covering a name with whitespace (e.g., `"  "`) — _not_ an AC, but a nice-to-have if trivial.
 
 ## Out of scope
 
