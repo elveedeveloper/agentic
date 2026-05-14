@@ -1,0 +1,165 @@
+name: reusable-claude-from-jira-node
+
+# Reusable Tier-2 autonomous workflow for Node.js consumers. Triggered
+# by the caller's `repository_dispatch: jira-ticket-ready` event (fired
+# from a Jira automation rule when a ticket is labeled `agent-ready`).
+# Runs Claude end-to-end and opens a DRAFT pull request.
+#
+# Caller pattern (in the consumer's .github/workflows/claude-from-jira.yml):
+#
+#   on:
+#     repository_dispatch:
+#       types: [jira-ticket-ready]
+#   permissions:
+#     contents: write
+#     pull-requests: write
+#     issues: write
+#   jobs:
+#     develop:
+#       uses: elveedeveloper/agentic/.github/workflows/reusable-claude-from-jira-node.yml@main
+#       with:
+#         ticket-key:    ${{ github.event.client_payload.ticket_key }}
+#         ticket-summary: ${{ github.event.client_payload.summary }}
+#         ticket-description: ${{ github.event.client_payload.description }}
+#       secrets:
+#         anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+#         jira-dispatch-pat: ${{ secrets.JIRA_DISPATCH_PAT }}
+#
+# Jira automation rule (set up once per Jira project):
+#   Trigger: Label added = `agent-ready`
+#   Action:  Send web request
+#     URL:     https://api.github.com/repos/<owner>/<repo>/dispatches
+#     Method:  POST
+#     Headers: Authorization: token <PAT_WITH_REPO_DISPATCH>
+#              Accept: application/vnd.github+json
+#     Body:    {
+#                "event_type": "jira-ticket-ready",
+#                "client_payload": {
+#                  "ticket_key":  "{{issue.key}}",
+#                  "summary":     "{{issue.summary}}",
+#                  "description": "{{issue.description}}"
+#                }
+#              }
+
+on:
+  workflow_call:
+    inputs:
+      ticket-key:
+        description: "Jira ticket key (e.g., EL-210)."
+        type: string
+        required: true
+      ticket-summary:
+        description: "Jira ticket summary."
+        type: string
+        required: true
+      ticket-description:
+        description: "Jira ticket description (markdown)."
+        type: string
+        required: false
+        default: ""
+      node-version:
+        description: "Node.js version (overridden by .nvmrc if present)."
+        type: string
+        default: "22.x"
+      working-directory:
+        description: "Directory containing package.json (relative to repo root)."
+        type: string
+        default: "."
+      action-ref:
+        description: "Pinned ref / tag of anthropics/claude-code-action. VERIFY current stable tag."
+        type: string
+        default: "v1"
+    secrets:
+      anthropic-api-key:
+        description: "Anthropic API key for Claude Code."
+        required: true
+      jira-dispatch-pat:
+        description: "Fine-grained PAT with contents:write + pull-requests:write on this repo. Required so Claude's push retriggers downstream CI; falls back to GITHUB_TOKEN otherwise."
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.jira-dispatch-pat || github.token }}
+
+      - name: Compute feature branch name
+        id: branch
+        env:
+          TICKET: ${{ inputs.ticket-key }}
+          SUMMARY: ${{ inputs.ticket-summary }}
+        run: |
+          set -euo pipefail
+          SLUG=$(echo "$SUMMARY" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9]/-/g' \
+            | sed 's/--*/-/g' \
+            | sed 's/^-//;s/-$//' \
+            | cut -c1-40)
+          BRANCH="${TICKET}/${SLUG}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git + create branch
+        run: |
+          git config user.name  "claude-bot"
+          git config user.email "claude-bot@users.noreply.github.com"
+          git checkout -b "${{ steps.branch.outputs.branch }}"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ${{ inputs.working-directory }}/.nvmrc
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Claude develops the ticket
+        uses: anthropics/claude-code-action@${{ inputs.action-ref }}
+        with:
+          anthropic_api_key: ${{ secrets.anthropic-api-key }}
+          prompt: |
+            You are picking up Jira ticket ${{ inputs.ticket-key }} in ${{ github.repository }}.
+
+            **Summary:**     ${{ inputs.ticket-summary }}
+
+            **Description:**
+            ${{ inputs.ticket-description }}
+
+            **Process:**
+            1. Read CLAUDE.md fully before planning.
+            2. Plan the change. Write a 3-5 bullet plan into the eventual PR body.
+            3. Implement, tests-first when the AC is measurable. Use existing patterns from the repo.
+            4. Run `npm run check`. Iterate until green.
+            5. Commit with Conventional Commits + the ticket key in the subject.
+               Example: `feat(scope): short description (${{ inputs.ticket-key }})`
+            6. Push to origin/${{ steps.branch.outputs.branch }}.
+            7. Open a **DRAFT** PR via `gh pr create --draft`. The PR body MUST include:
+                 - The ticket key in the title (Atlassian auto-links it).
+                 - A "Plan" section: 3-5 bullets describing what you did.
+                 - A "Test plan" section: what you tested + what you intentionally did not.
+                 - An "Acceptance criteria" checklist mapping each AC to a test or code location.
+                 - Any open questions that need a human call.
+
+            **Hard rules — never violate:**
+            - DRAFT PR only. Humans promote to ready-for-review.
+            - Never merge.
+            - Never force-push.
+            - Never modify `.github/workflows/`.
+            - Never commit `.env` or anything matching the secret patterns in `.claude/hooks/guard-secrets.mjs`.
+            - If the ticket scope is genuinely too big (>2 distinct areas of the codebase or >400 line estimate), open a draft PR with a single empty commit and a body explaining that the ticket should be split. Do NOT implement.
+          allowed_tools: "Read,Edit,Write,MultiEdit,Grep,Glob,Bash(npm:*),Bash(npx:*),Bash(node:*),Bash(git status),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Bash(git switch:*),Bash(git push:*),Bash(gh pr:*),Bash(gh issue:*)"
